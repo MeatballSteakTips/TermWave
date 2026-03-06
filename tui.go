@@ -20,7 +20,10 @@ type model struct {
 	menuTitles  		[]string
 	menuItems   		[][]string
 	stations 				[]Station
+	savedStations   []Station //Page number, each will hold 8
 	stationCursor   int
+	viewState 		  string // Tells me if I am in search or saved sations mode
+	savedPage       int    //Page #s
 	focused         string
 	err							error
 	currentStation  Station
@@ -33,17 +36,26 @@ func initialModel() model {
 	ti.CharLimit = 50
 	ti.SetWidth(30)
 
+	//Loading saved stations
+	loadedStations, err := loadStations()
+	if err != nil || loadedStations == nil {
+		loadedStations = []Station{}
+	}
+
 	return model {
 		stations: []Station{},
+		savedStations: loadedStations,
 		stationCursor: 0,
 		focused: "stations",
+		viewState: "saved",
+		savedPage: 0,
 		searchInput: ti,
 		activeMenuIndex: 0,
 		menuOpen: false,
 		menuCursors: []int{0, 0, 0}, 
 		menuTitles: []string{"Stations", "Settings", "Help"},
 		menuItems: [][]string {
-						{"Add Station", "Remove Station", "Quit"},
+						{"Add Station","Saved Stations", "Quit"},
 						{"Audio Settings", "Theme Settings", "Preferences"},
 						{"About", "Documentation", "License"},
 		},
@@ -61,13 +73,24 @@ func fetchStations(query string) tea.Cmd {
 }
 
 func (m model) Init() tea.Cmd {
-	return fetchStations("Synphaera")
+	return nil
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case stationsLoadedMsg:
+		//Making a loop so I can check if the station is already saved
+		for i, newStation := range msg {
+			for _, savedStation := range m.savedStations {
+				if newStation.URL == savedStation.URL {
+					msg[i].Saved = "*"
+					break
+				}
+			}
+		}
 		m.stations = msg
+		m.viewState = "search"
+		m.stationCursor = 0
 		return m, nil
 
 	case errMsg:
@@ -76,7 +99,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		s := msg.String();
-		if m.focused == "search" {
+		if m.focused == "search" { //This is for the search window. Note to me: I should make this less confusing later
 			switch s {
 			case "esc":
 				m.focused = "stations"
@@ -89,7 +112,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, fetchStations(query) //Search for the list
 
 			}
-			//This is to set up the field for typing
+			//This is to set up the field for typing. Otherwise it will do weird stuff
 			var cmd tea.Cmd
 			m.searchInput, cmd = m.searchInput.Update(msg)
 			return m, cmd
@@ -129,6 +152,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.searchInput.Focus()
 					m.searchInput.SetValue("")
 					m.menuOpen = false
+				} else if selectedItem == "Saved Stations" {
+					m.focused = "stations"
+					m.viewState = "saved"
+					m.menuOpen = false
+				} else if selectedItem == "Quit" {
+					StopStream()
+					return m, tea.Quit
 				} else {
 					m.menuOpen = false
 				}
@@ -151,21 +181,59 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				
 			} else if m.focused == "stations" {
 				//Radio list focused
+				var currentListLen int
+				if m.viewState == "search" {
+					currentListLen = len(m.stations)
+				} else {
+					startIndex := m.savedPage * 16
+					endIndex := startIndex + 16
+					if endIndex > len(m.savedStations) {
+						endIndex = len(m.savedStations)
+					}
+					currentListLen = endIndex - startIndex
+				}
 				switch s {
 				case "up", "k":
 					if m.stationCursor > 0 {
 						m.stationCursor--
 					}
 				case "down", "j":
-					if m.stationCursor < len(m.stations)-1 {
+					if m.stationCursor < currentListLen - 1 {
 						m.stationCursor++
 					}
-				case "enter":
-					//set current station and play
-					m.currentStation = m.stations[m.stationCursor]
-					if len(m.stations) > 0 {
-						_ = PlayStream(m.stations[m.stationCursor].URL)
+				case "s":
+					if m.viewState == "search" && len(m.stations) > 0 && m.stations[m.stationCursor].Saved != "*" {
+						m.savedStations = append(m.savedStations, m.stations[m.stationCursor])
+						m.stations[m.stationCursor].Saved = "*"
+						_ = saveStations(m.savedStations)
 					}
+				case "x", "delete":
+					if m.viewState == "saved" && len(m.savedStations) > 0 {
+						startIndex := m.savedPage * 16
+						actualIndex := startIndex + m.stationCursor
+
+						m.savedStations = append(m.savedStations[:actualIndex], m.savedStations[actualIndex + 1:]...)
+						_ = saveStations(m.savedStations)
+
+						itemsLeftOnPage := len(m.savedStations) - startIndex
+							if m.stationCursor >0 && m.stationCursor >= itemsLeftOnPage {
+								m.stationCursor--
+							}
+
+							if startIndex >= len(m.savedStations) && m.savedPage > 0 {
+								m.savedPage--
+								m.stationCursor = 7
+							}
+					}
+				case "enter":
+					if m.viewState == "search" && len(m.stations) > 0 {
+						m.currentStation = m.stations[m.stationCursor]
+						_ = PlayStream(m.currentStation.URL)
+					} else if m.viewState == "saved" && currentListLen > 0 {
+						startIndex := m.savedPage * 16
+						m.currentStation = m.savedStations[startIndex + m.stationCursor]
+						_ = PlayStream(m.currentStation.URL)
+					}	
 				case "q", "esc":
 					StopStream()
 					return m, tea.Quit
@@ -192,23 +260,51 @@ func (m model) drawPanes() string {
 	stationName := "None"
 	//stationImage := ""
 
-	if m.err != nil {
-		leftContent += fmt.Sprintf("Error fetching stations: %v", m.err)
-	} else if len(m.stations) == 0 {
-		leftContent += "Loading stations..."
-	} else {
-		for i, s := range m.stations {
-			cursor := " "
-			if m.stationCursor == i {
-				if m.focused == "stations" {
+	if m.viewState == "search" {
+		leftContent = "Stations (Search Results)\n\n"
+		if m.err != nil {
+			leftContent += fmt.Sprintf("Error fetching stations: %v", m.err)
+		} else if len(m.stations) == 0 {
+			leftContent += "Loading stations..."
+		} else {
+			for i, s := range m.stations {
+				cursor := "  "
+				if m.stationCursor == i && m.focused == "stations" {
 					cursor = "> "
-				} else {
-					cursor = "  "
 				}
+				leftContent += fmt.Sprintf("%s%d. %s %s\n", cursor, i + 1, s.Name, s.Saved)
 			}
-			leftContent += fmt.Sprintf("%s%d. %s\n", cursor, i + 1, s.Name)
 		}
+	} else if m.viewState == "saved" { //Saved Stations logic
+		leftContent = "Stations\n\n"
+
+		if len(m.savedStations) == 0 {
+			leftContent += "No stations saved\nSearch for a station in Stations->Add Station"
+		} else {
+			itemsPerPage := 16
+
+			startIndex := m.savedPage * itemsPerPage
+			endIndex := startIndex + itemsPerPage
+
+			if endIndex > len(m.savedStations) {
+				endIndex = len(m.savedStations)
+			}
+
+			pageItems := m.savedStations[startIndex:endIndex]
+
+			for i, s := range pageItems {
+				cursor := "  "
+
+				if m.stationCursor == i && m.focused == "stations" {
+					cursor = "> "
+				}
+				leftContent += fmt.Sprintf("%s%d. %s %s\n", cursor, (startIndex + i) + 1, s.Name, s.Saved)
+			}
+
+			totalPages := (len(m.savedStations) + itemsPerPage - 1) / itemsPerPage
+			leftContent += fmt.Sprintf("\n\n  --- Page %d of %d ---", m.savedPage + 1, totalPages)
 	}
+}
 
 	if m.currentStation.Name != "" {
 		stationName = m.currentStation.Name

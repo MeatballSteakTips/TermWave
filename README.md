@@ -10,8 +10,8 @@ Program was made using Go and the BubbleTea V2 framework. ⚠️ MPV is required
 ### Currently Working:
     * Search for internet radio stations (Using api.radio-browser)
     * Radio Playback using mpv
+    * Functionality to Save and Remove Stations has been added
 ### Roadmap:
-    * Adding a saved-station list
     * Adding live song-titles/ICY metadata
     * Adding playback-buttons
     * Make the UI look better
@@ -24,6 +24,12 @@ $ git clone https://github.com/MeatballSteakTips/TermWave.git
 $ cd TermWave
 $ go run .
 ```
+### Controls: 
+    * Use Tab to switch focus between Toolbar and Stations Pane.
+    * S saves a Station
+    * X removes a station
+    * Enter for everything else
+
 Be sure you have MPV installed!
 
 Debian/Ubuntu based:
